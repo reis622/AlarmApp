@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="tr" class="bg-[#121212] h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlarmApp</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="font-sans text-white min-h-screen">
+
+    <aside class="fixed top-0 left-0 h-screen w-[380px] p-10 flex flex-col gap-8 bg-[#161616] border-r border-green-900/30 z-20">
+        
+        <div id="dateDiv" class="p-6 border-2 border-green-500 rounded-2xl text-5xl font-mono text-center bg-[#121212] shadow-[0_0_20px_rgba(34,197,94,0.2)]">
+            00:00:00
+        </div>
+
+        <div id="setAll" class="flex flex-col items-center p-6 bg-[#1f1f1f] rounded-2xl border border-gray-700 shadow-xl gap-5">
+            <h3 class="text-xl font-bold text-green-400 uppercase tracking-widest">Alarm Kur</h3>
+            
+            <label class="w-full">
+                <span class="label-text text-gray-400">Saat:</span>
+                <input type="time" class="input input-bordered border-gray-600 focus:border-green-500 w-full text-white mt-1" id="alarmTime"/>
+            </label>
+
+            <label class="w-full">
+                <span class="label-text text-gray-400">Müzik (Opsiyonel):</span>
+                <input type="file" accept="audio/*" class="file-input file-input-bordered file-input-success w-full mt-1 bg-[#121212]" id="musicFile"/>
+            </label>
+            
+            <button onclick="saveAlarm()" class="btn btn-success w-full text-white font-black text-lg">EKLE</button>
+        </div>
+        
+        <div class="mt-auto text-gray-600 text-sm text-center">
+            AlarmApp v1.0 
+        </div>
+    </aside>
+
+    <main class="ml-[380px] flex justify-center p-10 min-h-screen">
+        <div class="w-full max-w-3xl flex flex-col gap-4" id="alarm-container">
+            <div class="flex items-center justify-center border-b border-gray-800 pb-4 mb-6">
+                <span class="badge badge-outline border-gray-600 text-gray-400" id="alarmCount">0 Alarm</span>
+            </div>
+            </div>
+    </main>
+
+    <audio id="alarmAudio" loop></audio>
+
+    <dialog id="alarmModal" class="modal">
+      <div class="modal-box bg-[#1a1a1a] border-4 border-red-600 text-center shadow-[0_0_50px_rgba(220,38,38,0.5)]">
+        <div class="py-4">
+            <span class="loading loading-ring loading-lg text-red-600"></span>
+            <h3 class="font-black text-6xl text-red-600 mt-2 animate-bounce">ALARM!</h3>
+            <p class="py-6 text-4xl font-mono font-bold" id="activeAlarmTime">00:00</p>
+        </div>
+        <div class="modal-action justify-center">
+          <button class="btn btn-error btn-lg w-full font-black text-xl" onclick="stopAlarm()">DURDUR</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script>
+        const alarmContainer = document.getElementById('alarm-container');
+        const alarmTimeInput = document.getElementById('alarmTime');
+        const musicFileInput = document.getElementById('musicFile');
+        const alarmAudio = document.getElementById('alarmAudio');
+        const dateDiv = document.getElementById('dateDiv');
+        const alarmModal = document.getElementById('alarmModal');
+
+        const DEFAULT_ALARM_URL = "https://actions.google.com/sounds/v1/alarms/beep_loop.ogg";
+        let db;
+        let currentPlayingAlarmId = null;
+
+        // IndexedDB Ayarları
+        const request = indexedDB.open("AlarmMusicDB", 1);
+        request.onupgradeneeded = e => {
+            db = e.target.result;
+            db.createObjectStore("musics", { keyPath: "id" });
+        };
+        request.onsuccess = e => { db = e.target.result; loadAlarms(); };
+
+        // Saat Güncelleme
+        setInterval(() => {
+            dateDiv.innerHTML = new Date().toLocaleTimeString('tr-TR');
+        }, 1000);
+
+        // Alarm Kontrol Mekanizması
+        setInterval(() => {
+            const now = new Date();
+            const currentTime = now.getHours().toString().padStart(2, '0') + ":" + 
+                              now.getMinutes().toString().padStart(2, '0');
+
+            const savedAlarms = JSON.parse(localStorage.getItem('alarms') || '[]');
+            savedAlarms.forEach(alarm => {
+                if (alarm.active && alarm.time === currentTime && alarmAudio.paused) {
+                    startPlaying(alarm);
+                }
+            });
+        }, 1000);
+
+        async function saveAlarm() {
+            if (!alarmTimeInput.value) {
+                alert("Lütfen bir saat seçin!");
+                return;
+            }
+
+            const id = Date.now().toString();
+            const time = alarmTimeInput.value;
+            const file = musicFileInput.files[0];
+
+            if (file) {
+                const transaction = db.transaction("musics", "readwrite");
+                transaction.objectStore("musics").add({ id: id, data: file });
+            }
+
+            const alarms = JSON.parse(localStorage.getItem('alarms') || '[]');
+            alarms.push({ id, time, active: true, hasCustomMusic: !!file });
+            localStorage.setItem('alarms', JSON.stringify(alarms));
+
+            renderAlarm({ id, time, active: true });
+            updateAlarmCount();
+            
+            alarmTimeInput.value = "";
+            musicFileInput.value = "";
+        }
+
+        async function startPlaying(alarm) {
+            currentPlayingAlarmId = alarm.id;
+            
+            if (alarm.hasCustomMusic) {
+                const transaction = db.transaction("musics", "readonly");
+                const request = transaction.objectStore("musics").get(alarm.id);
+                request.onsuccess = () => {
+                    if (request.result) {
+                        alarmAudio.src = URL.createObjectURL(request.result.data);
+                        finishPlaying(alarm.time);
+                    } else {
+                        playDefault(alarm.time);
+                    }
+                };
+            } else {
+                playDefault(alarm.time);
+            }
+        }
+
+        function playDefault(time) {
+            alarmAudio.src = DEFAULT_ALARM_URL;
+            finishPlaying(time);
+        }
+
+        function finishPlaying(time) {
+            alarmAudio.play();
+            document.getElementById('activeAlarmTime').innerText = time;
+            alarmModal.showModal();
+        }
+
+        function stopAlarm() {
+            alarmAudio.pause();
+            alarmAudio.src = "";
+            
+            if (currentPlayingAlarmId) {
+                const alarms = JSON.parse(localStorage.getItem('alarms') || '[]');
+                const index = alarms.findIndex(a => a.id === currentPlayingAlarmId);
+                if (index !== -1) {
+                    alarms[index].active = false;
+                    localStorage.setItem('alarms', JSON.stringify(alarms));
+                    
+                    const toggle = document.querySelector(`#alarm-${currentPlayingAlarmId} .toggle`);
+                    if (toggle) toggle.checked = false;
+                    const card = document.getElementById(`alarm-${currentPlayingAlarmId}`);
+                    if (card) {
+                        card.classList.replace('border-green-400', 'border-gray-600');
+                    }
+                }
+            }
+            alarmModal.close();
+        }
+
+        function renderAlarm(alarm) {
+            const div = document.createElement('div');
+            div.id = `alarm-${alarm.id}`;
+            div.className = `flex justify-between items-center bg-[#1a1a1a] p-6 rounded-2xl border-2 ${alarm.active ? 'border-green-400' : 'border-gray-600'} w-full transition-all duration-300`;
+            div.innerHTML = `
+                <div class="flex items-center gap-10">
+                    <span class="text-6xl font-mono font-black tracking-tighter">${alarm.time}</span>
+                    <input type="checkbox" ${alarm.active ? 'checked' : ''} 
+                           class="toggle toggle-success toggle-lg scale-125" 
+                           onchange="toggleAlarmStatus('${alarm.id}', this)"/>
+                </div>
+                <button onclick="deleteAlarm('${alarm.id}')" class="btn btn-circle btn-ghost hover:bg-red-900/40 text-red-500 font-bold">✕</button>
+            `;
+            alarmContainer.appendChild(div);
+        }
+
+        function toggleAlarmStatus(id, checkbox) {
+            const alarms = JSON.parse(localStorage.getItem('alarms') || '[]');
+            const index = alarms.findIndex(a => a.id === id);
+            if (index !== -1) {
+                alarms[index].active = checkbox.checked;
+                localStorage.setItem('alarms', JSON.stringify(alarms));
+                const card = document.getElementById(`alarm-${id}`);
+                card.classList.toggle('border-green-400', checkbox.checked);
+                card.classList.toggle('border-gray-600', !checkbox.checked);
+            }
+        }
+
+        function deleteAlarm(id) {
+            let alarms = JSON.parse(localStorage.getItem('alarms') || '[]');
+            alarms = alarms.filter(a => a.id !== id);
+            localStorage.setItem('alarms', JSON.stringify(alarms));
+
+            const transaction = db.transaction("musics", "readwrite");
+            transaction.objectStore("musics").delete(id);
+
+            document.getElementById(`alarm-${id}`).remove();
+            updateAlarmCount();
+        }
+
+        function updateAlarmCount() {
+            const count = JSON.parse(localStorage.getItem('alarms') || '[]').length;
+            document.getElementById('alarmCount').innerText = `${count} Alarm`;
+        }
+
+        function loadAlarms() {
+            const alarms = JSON.parse(localStorage.getItem('alarms') || '[]');
+            alarms.forEach(renderAlarm);
+            updateAlarmCount();
+        }
+    </script>
+</body>
+</html>
